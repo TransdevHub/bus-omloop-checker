@@ -1,0 +1,391 @@
+<!DOCTYPE html>
+
+<html lang="nl">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Bus Omloop Checker</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link rel="manifest" href="manifest.json">
+    <meta name="theme-color" content="#3B82F6">
+    <link rel="apple-touch-icon" href="icon.png">
+</head>
+<body class="bg-gradient-to-br from-blue-50 to-indigo-100 min-h-screen">
+    <div id="app" class="p-4 max-w-4xl mx-auto">
+        <!-- Header -->
+        <div class="bg-white rounded-xl shadow-lg p-6 mb-6">
+            <div class="flex items-center justify-between">
+                <div>
+                    <h1 class="text-3xl font-bold text-gray-800 mb-2">
+                        🚌 Bus Omloop Checker
+                    </h1>
+                    <p class="text-gray-600">
+                        Upload je dienstinfo om automatisch checks te krijgen
+                    </p>
+                </div>
+                <div class="text-blue-500 text-4xl">🕐</div>
+            </div>
+        </div>
+
+```
+    <!-- Upload sectie -->
+    <div id="upload-section" class="bg-white rounded-xl shadow-lg p-8 mb-6">
+        <label class="flex flex-col items-center justify-center border-4 border-dashed border-blue-300 rounded-xl p-12 cursor-pointer hover:border-blue-500 transition-all">
+            <div class="text-6xl mb-4">📄</div>
+            <span class="text-xl font-semibold text-gray-700 mb-2">
+                Upload je dienstinfo PDF
+            </span>
+            <span class="text-gray-500">
+                (Klik hier of sleep bestand)
+            </span>
+            <input type="file" accept=".pdf,.txt" id="file-input" class="hidden">
+        </label>
+        <div id="error-message" class="hidden mt-4 p-4 bg-red-50 border-l-4 border-red-500 rounded text-red-700"></div>
+        <div id="loading" class="hidden flex flex-col items-center justify-center py-12">
+            <div class="animate-spin text-6xl mb-4">⚙️</div>
+            <span class="text-xl font-semibold text-gray-700">PDF wordt gelezen...</span>
+        </div>
+    </div>
+
+    <!-- Dienst overzicht -->
+    <div id="dienst-section" class="hidden">
+        <div class="bg-white rounded-xl shadow-lg p-6 mb-6">
+            <div class="flex items-center justify-between mb-4">
+                <h2 class="text-2xl font-bold text-gray-800">
+                    Dienst <span id="dienst-nummer"></span>
+                </h2>
+                <button id="new-dienst-btn" class="px-4 py-2 bg-red-500 text-white rounded-lg hover:bg-red-600">
+                    Nieuwe dienst
+                </button>
+            </div>
+            
+            <div class="flex items-center gap-2 text-gray-600 mb-4">
+                <span>📅</span>
+                <span>Huidige tijd: <span id="current-time"></span></span>
+            </div>
+
+            <div id="momenten-lijst" class="grid gap-4"></div>
+        </div>
+
+        <!-- Notificaties -->
+        <div id="notifications-section" class="hidden bg-white rounded-xl shadow-lg p-6">
+            <h3 class="text-xl font-bold text-gray-800 mb-4 flex items-center gap-2">
+                <span>🔔</span>
+                Notificaties
+            </h3>
+            <div id="notifications-list" class="space-y-3"></div>
+        </div>
+    </div>
+
+    <!-- Info sectie -->
+    <div class="bg-white rounded-xl shadow-lg p-6 mt-6">
+        <h3 class="text-lg font-bold text-gray-800 mb-3">
+            ℹ️ Hoe werkt het?
+        </h3>
+        <ul class="space-y-2 text-gray-700">
+            <li class="flex items-start gap-2">
+                <span class="text-blue-500 font-bold">1.</span>
+                <span>Upload je dienstinfo PDF</span>
+            </li>
+            <li class="flex items-start gap-2">
+                <span class="text-blue-500 font-bold">2.</span>
+                <span>De app detecteert automatisch alle "Lost af" en "Afgel door" momenten</span>
+            </li>
+            <li class="flex items-start gap-2">
+                <span class="text-blue-500 font-bold">3.</span>
+                <span>Je krijgt 30 minuten van tevoren een notificatie om te checken</span>
+            </li>
+            <li class="flex items-start gap-2">
+                <span class="text-orange-500 font-bold">⚠️</span>
+                <span><strong>Lost af:</strong> Check ovzoeker.nl of de bus rijdt</span>
+            </li>
+            <li class="flex items-start gap-2">
+                <span class="text-blue-500 font-bold">🚨</span>
+                <span><strong>Afgel door:</strong> Check U-OV of de rit vervalt</span>
+            </li>
+        </ul>
+    </div>
+</div>
+
+<script>
+    // PDF.js setup
+    pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
+
+    let currentDienst = null;
+    let notifications = [];
+
+    // Vraag notificatie permissie bij laden
+    if ('Notification' in window && Notification.permission === 'default') {
+        Notification.requestPermission();
+    }
+
+    // Update tijd elke minuut
+    setInterval(updateTime, 60000);
+    updateTime();
+
+    function updateTime() {
+        const now = new Date();
+        const timeStr = now.toLocaleTimeString('nl-NL', { hour: '2-digit', minute: '2-digit' });
+        const timeEl = document.getElementById('current-time');
+        if (timeEl) timeEl.textContent = timeStr;
+        
+        // Check voor notificaties
+        checkNotifications();
+    }
+
+    function calculateCheckTime(hours, minutes) {
+        const tijd = new Date();
+        tijd.setHours(parseInt(hours));
+        tijd.setMinutes(parseInt(minutes) - 30);
+        return tijd;
+    }
+
+    function parseDienstInfo(text) {
+        const lines = text.split('\n');
+        const kritiekeMomenten = [];
+        
+        let dienstNummer = 'Onbekend';
+        const dienstMatch = text.match(/Dienst\s+Van.*?\n([A-Z]\d+)/s);
+        if (dienstMatch) {
+            dienstNummer = dienstMatch[1];
+        }
+        
+        for (let i = 0; i < lines.length; i++) {
+            const line = lines[i].trim();
+            
+            if (!line || line.includes('WebComm') || line.includes('Transdev')) continue;
+            
+            const parts = line.split(/\s+/);
+            if (parts[0] !== dienstNummer) continue;
+            
+            const timeMatch = line.match(/(\d{2}):(\d{2})\s+\w+\s+(\d{2}):(\d{2})/);
+            if (!timeMatch) continue;
+            
+            const endTime = `${timeMatch[3]}:${timeMatch[4]}`;
+            
+            if (line.includes('Lost af')) {
+                const lostAfMatch = line.match(/Lost af (\d+)/);
+                const omloopMatch = line.match(/u\d{3}\s+\d+\s+(\d+)/);
+                
+                if (lostAfMatch && omloopMatch) {
+                    kritiekeMomenten.push({
+                        type: 'lost_af',
+                        tijd: endTime,
+                        chauffeur: lostAfMatch[1],
+                        omloop: omloopMatch[1],
+                        checkTijd: calculateCheckTime(timeMatch[3], timeMatch[4]),
+                        notified: false
+                    });
+                }
+            }
+            
+            if (line.includes('Afgel door')) {
+                const afgelMatch = line.match(/Afgel door (\d+)/);
+                const omloopMatch = line.match(/u\d{3}\s+\d+\s+(\d+)/);
+                
+                if (afgelMatch && omloopMatch) {
+                    kritiekeMomenten.push({
+                        type: 'afgel_door',
+                        tijd: endTime,
+                        chauffeur: afgelMatch[1],
+                        omloop: omloopMatch[1],
+                        checkTijd: calculateCheckTime(timeMatch[3], timeMatch[4]),
+                        notified: false
+                    });
+                }
+            }
+            
+            const comboMatch = line.match(/Lost af (\d+)\/Afgel door (\d+)/);
+            if (comboMatch) {
+                const omloopMatch = line.match(/u\d{3}\s+\d+\s+(\d+)/);
+                if (omloopMatch) {
+                    kritiekeMomenten.push({
+                        type: 'lost_af',
+                        tijd: endTime,
+                        chauffeur: comboMatch[1],
+                        omloop: omloopMatch[1],
+                        checkTijd: calculateCheckTime(timeMatch[3], timeMatch[4]),
+                        notified: false
+                    });
+                    kritiekeMomenten.push({
+                        type: 'afgel_door',
+                        tijd: endTime,
+                        chauffeur: comboMatch[2],
+                        omloop: omloopMatch[1],
+                        checkTijd: calculateCheckTime(timeMatch[3], timeMatch[4]),
+                        notified: false
+                    });
+                }
+            }
+        }
+        
+        return { dienstNummer, kritiekeMomenten };
+    }
+
+    async function handleFileUpload(file) {
+        const loading = document.getElementById('loading');
+        const uploadSection = document.getElementById('upload-section');
+        const errorMsg = document.getElementById('error-message');
+        
+        loading.classList.remove('hidden');
+        errorMsg.classList.add('hidden');
+
+        try {
+            let text;
+            
+            if (file.type === 'application/pdf') {
+                const arrayBuffer = await file.arrayBuffer();
+                const pdf = await pdfjsLib.getDocument({ data: arrayBuffer }).promise;
+                
+                text = '';
+                for (let i = 1; i <= pdf.numPages; i++) {
+                    const page = await pdf.getPage(i);
+                    const textContent = await page.getTextContent();
+                    const pageText = textContent.items.map(item => item.str).join(' ');
+                    text += pageText + '\n';
+                }
+            } else {
+                text = await file.text();
+            }
+            
+            const result = parseDienstInfo(text);
+            
+            if (result.kritiekeMomenten.length === 0) {
+                throw new Error('Geen "Lost af" of "Afgel door" momenten gevonden');
+            }
+            
+            currentDienst = result;
+            displayDienst();
+            
+        } catch (err) {
+            console.error('Error:', err);
+            errorMsg.textContent = err.message || 'Kon bestand niet lezen';
+            errorMsg.classList.remove('hidden');
+        } finally {
+            loading.classList.add('hidden');
+        }
+    }
+
+    function displayDienst() {
+        document.getElementById('upload-section').classList.add('hidden');
+        document.getElementById('dienst-section').classList.remove('hidden');
+        document.getElementById('dienst-nummer').textContent = currentDienst.dienstNummer;
+        
+        const lijst = document.getElementById('momenten-lijst');
+        lijst.innerHTML = '';
+        
+        currentDienst.kritiekeMomenten.forEach(moment => {
+            const div = document.createElement('div');
+            const isUpcoming = moment.checkTijd > new Date();
+            
+            div.className = `p-4 rounded-lg border-2 ${
+                isUpcoming ? 'bg-yellow-50 border-yellow-400' : 'bg-gray-50 border-gray-300'
+            }`;
+            
+            div.innerHTML = `
+                <div class="flex items-start justify-between">
+                    <div class="flex-1">
+                        <div class="flex items-center gap-2 mb-2">
+                            <span class="text-xl">${moment.type === 'lost_af' ? '⚠️' : '🔔'}</span>
+                            <span class="font-bold text-lg">
+                                ${moment.type === 'lost_af' ? 'Lost af' : 'Afgel door'} ${moment.chauffeur}
+                            </span>
+                        </div>
+                        <div class="ml-7 space-y-1 text-gray-700">
+                            <p><span class="font-semibold">Omloop:</span> ${moment.omloop}</p>
+                            <p><span class="font-semibold">Tijd:</span> ${moment.tijd}</p>
+                            <p class="text-sm text-gray-600">
+                                <span class="font-semibold">Check om:</span> 
+                                ${moment.checkTijd.toLocaleTimeString('nl-NL', { hour: '2-digit', minute: '2-digit' })}
+                            </p>
+                        </div>
+                        <div class="ml-7 mt-2 text-sm ${
+                            moment.type === 'lost_af' 
+                                ? 'text-orange-700 bg-orange-100' 
+                                : 'text-blue-700 bg-blue-100'
+                        } px-3 py-1 rounded">
+                            ${moment.type === 'lost_af' 
+                                ? 'Check ovzoeker.nl of bus rijdt' 
+                                : 'Check U-OV of rit vervalt'}
+                        </div>
+                    </div>
+                    <div class="flex items-center gap-2 ${
+                        isUpcoming ? 'text-yellow-700' : 'text-gray-500'
+                    } font-semibold">
+                        <span class="text-xl">${isUpcoming ? '🕐' : '✅'}</span>
+                        <span>${isUpcoming ? 'Te checken' : 'Geweest'}</span>
+                    </div>
+                </div>
+            `;
+            
+            lijst.appendChild(div);
+        });
+    }
+
+    function checkNotifications() {
+        if (!currentDienst) return;
+        
+        const now = new Date();
+        
+        currentDienst.kritiekeMomenten.forEach(moment => {
+            if (moment.notified) return;
+            
+            const timeDiff = Math.abs(now - moment.checkTijd);
+            
+            if (timeDiff < 60000) {
+                moment.notified = true;
+                
+                const message = moment.type === 'lost_af' 
+                    ? `⚠️ Check omloop ${moment.omloop}! Je moet om ${moment.tijd} opstappen (Lost af ${moment.chauffeur})`
+                    : `🚨 Check omloop ${moment.omloop}! Chauffeur ${moment.chauffeur} moet om ${moment.tijd} overnemen`;
+                
+                if ('Notification' in window && Notification.permission === 'granted') {
+                    new Notification('Bus Omloop Check', {
+                        body: message,
+                        icon: '🚌',
+                        tag: `check-${moment.omloop}-${moment.tijd}`
+                    });
+                }
+                
+                addNotification(message);
+            }
+        });
+    }
+
+    function addNotification(message) {
+        const notifSection = document.getElementById('notifications-section');
+        const notifList = document.getElementById('notifications-list');
+        
+        notifSection.classList.remove('hidden');
+        
+        const div = document.createElement('div');
+        div.className = 'p-4 bg-blue-50 border-l-4 border-blue-500 rounded';
+        div.innerHTML = `
+            <p class="text-gray-800">${message}</p>
+            <p class="text-sm text-gray-500 mt-1">
+                ${new Date().toLocaleTimeString('nl-NL', { hour: '2-digit', minute: '2-digit' })}
+            </p>
+        `;
+        
+        notifList.insertBefore(div, notifList.firstChild);
+    }
+
+    // Event listeners
+    document.getElementById('file-input').addEventListener('change', (e) => {
+        const file = e.target.files[0];
+        if (file) handleFileUpload(file);
+    });
+
+    document.getElementById('new-dienst-btn').addEventListener('click', () => {
+        currentDienst = null;
+        document.getElementById('upload-section').classList.remove('hidden');
+        document.getElementById('dienst-section').classList.add('hidden');
+        document.getElementById('notifications-section').classList.add('hidden');
+        document.getElementById('file-input').value = '';
+    });
+</script>
+```
+
+</body>
+</html>
